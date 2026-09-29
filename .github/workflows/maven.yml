@@ -1,0 +1,83 @@
+name: Java CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: java-ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@dd06d9cba3e5552c54d9f8ea23572deb30010f7c # v6.0.0
+        with:
+          java-version: '21'
+          distribution: temurin
+          cache: maven
+
+      - name: Verify
+        run: ./mvnw --batch-mode --no-transfer-progress clean verify
+
+      - name: Upload test and coverage reports
+        if: ${{ always() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: java-reports-${{ github.run_id }}
+          path: |
+            target/surefire-reports/
+            target/failsafe-reports/
+            target/site/jacoco/
+          if-no-files-found: ignore
+          retention-days: 14
+
+      - name: Upload package and SBOM
+        if: ${{ success() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: java-package-${{ github.sha }}
+          path: |
+            target/cab-*.jar
+            target/classes/META-INF/sbom/application.cdx.json
+          if-no-files-found: error
+          retention-days: 14
+
+  deployment-assets:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Validate workflows
+        run: docker run --rm --volume "$PWD:/repo" --workdir /repo rhysd/actionlint:1.7.12@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667 -color
+
+      - name: Validate Compose configuration
+        env:
+          APP_DATABASE_PASSWORD: ci-app-password
+          KEYCLOAK_ADMIN_PASSWORD: ci-keycloak-password
+          MINIO_ROOT_USER: ci-minio
+          MINIO_ROOT_PASSWORD: ci-minio-password
+          POSTGRES_PASSWORD: ci-postgres-password
+        run: docker compose config --quiet
+
+      - name: Build container image
+        run: docker build --tag cab-marketplace:ci .
+
+      - name: Validate Helm chart
+        run: |
+          docker run --rm --volume "$PWD:/apps" --workdir /apps alpine/helm:3.19.0@sha256:aef9b56f64e866207d9591d0abd8f6d767b36aadd12edf68f8a719716d9d29c9 lint deploy/helm/cab-marketplace --set existingSecret.name=ci-secret --set image.digest=sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa --set config.paymentProvider=ci --set config.paymentConfigReference=env:CAB_PAYMENT_CONFIG --set config.paymentWebhookSecretReference=env:CAB_PAYMENT_WEBHOOK_SECRET
+          docker run --rm --volume "$PWD:/apps" --workdir /apps alpine/helm:3.19.0@sha256:aef9b56f64e866207d9591d0abd8f6d767b36aadd12edf68f8a719716d9d29c9 template cab deploy/helm/cab-marketplace --set existingSecret.name=ci-secret --set image.digest=sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa --set config.paymentProvider=ci --set config.paymentConfigReference=env:CAB_PAYMENT_CONFIG --set config.paymentWebhookSecretReference=env:CAB_PAYMENT_WEBHOOK_SECRET >/dev/null

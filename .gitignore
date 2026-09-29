@@ -1,0 +1,14 @@
+bin/
+target/
+.idea
+.DS_Store
+*.iml
+WebContent/WEB-INF/lib/
+.pmd
+build
+.classpath
+.project
+.settings/
+.vscode/
+.factorypath
+.env
